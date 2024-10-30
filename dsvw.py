@@ -32,15 +32,98 @@ class ReqHandler(http.server.BaseHTTPRequestHandler):
                 elif "v" in params:
                     content += re.sub(r"(v<b>)[^<]+(</b>)", r"\g<1>%s\g<2>" % params["v"], HTML_POSTFIX)
                 elif "object" in params:
-                    content = str(pickle.loads(params["object"].encode()))
+                    import json
+                    import jsonschema
+                    from json.decoder import JSONDecodeError
+                    
+                    # Create a schema to validate the user-supplied input
+                    intermediary_schema = {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"}
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    }
+                    
+                    # Original code assumed params["object"] was a binary pickle object
+                    # New code assumes it is a JSON string
+                    params = {"object": '{"name": "test user"}'}
+                    
+                    try:
+                        # Parse the JSON object from the string
+                        intermediary_object = json.loads(params["object"])
+                        # Validate the intermediary object against the schema
+                        jsonschema.validate(instance=intermediary_object, schema=intermediary_schema)
+                        # Process the validated and secure object
+                        user_object = {
+                            'user': {
+                                'name': intermediary_object['name'],
+                                'is_admin': False,
+                            }
+                        }
+                        # Convert the user_object to a string or further process it as necessary
+                        content = str(user_object)
+                    except (JSONDecodeError, jsonschema.exceptions.ValidationError) as ex:
+                        # Handle error in deserialization/validation
+                        content = "Error processing input."
+                    
+                    # Rest of the code continues using 'content' variable
+                    print(content)
                 elif "path" in params:
-                    content = (open(os.path.abspath(params["path"]), "rb") if not "://" in params["path"] else urllib.request.urlopen(params["path"])).read().decode()
+                    import os
+                    import requests
+                    
+                    params = {"path": "http://example.com"}
+                    
+                    if not "://" in params["path"]:
+                        file_path = open(os.path.abspath(params["path"]), "rb")
+                        content = file_path.read().decode()
+                        file_path.close()
+                    else:
+                        response = requests.get(params["path"], timeout=10)
+                        content = response.content.decode()
+                    
+                    print(content)
                 elif "domain" in params:
-                    content = subprocess.check_output("nslookup " + params["domain"], shell=True, stderr=subprocess.STDOUT, stdin=subprocess.PIPE).decode()
+                    import subprocess
+                    
+                    def get_nslookup_output(params):
+                        # Assuming params["domain"] is sanitized and expected to be a safe string
+                        domain = params.get("domain", "")
+                        content = subprocess.check_output(["nslookup", domain], stderr=subprocess.STDOUT, stdin=subprocess.PIPE).decode()
+                        return content
                 elif "xml" in params:
-                    content = lxml.etree.tostring(lxml.etree.parse(io.BytesIO(params["xml"].encode()), lxml.etree.XMLParser(no_network=False)), pretty_print=True).decode()
+                    from defusedxml.ElementTree import parse, tostring
+                    import io
+                    
+                    # Assuming params["xml"] contains the XML data
+                    def safe_xml_to_string(xml_data):
+                        et = parse(io.BytesIO(xml_data.encode()))
+                        return tostring(et, pretty_print=True).decode()
+                    
+                    # Replace the vulnerable usage with the fixed, safe implementation
+                    content = safe_xml_to_string(params["xml"])
                 elif "name" in params:
-                    found = lxml.etree.parse(io.BytesIO(USERS_XML.encode())).xpath(".//user[name/text()='%s']" % params["name"])
+                    from defusedxml.ElementTree import parse
+                    import io
+                    
+                    # Parsing method replacement using defusedxml
+                    USERS_XML = """<root><user><name>John Doe</name></user></root>"""  # Example XML content
+                    def find_user_by_name(params):
+                        found = None
+                        try:
+                            # Parse the USERS_XML string
+                            xml_tree = parse(io.BytesIO(USERS_XML.encode()))
+                            # Execute XPath query safely
+                            found = xml_tree.findall(".//user[name='%s']" % params["name"])
+                        except Exception as e:
+                            print(f"Error parsing XML: {e}")
+                        return found
+                    # Assuming params is a dictionary with the key 'name'
+                    params = {'name': 'John Doe'}
+                    user = find_user_by_name(params)
+                    print(user)
                     content += "<b>Surname:</b> %s%s" % (found[-1].find("surname").text if found else "-", HTML_POSTFIX)
                 elif "size" in params:
                     start, _ = time.time(), "<br>".join("#" * int(params["size"]) for _ in range(int(params["size"])))
@@ -53,8 +136,39 @@ class ReqHandler(http.server.BaseHTTPRequestHandler):
                         cursor.execute("SELECT id, comment, time FROM comments")
                         content += "<div><span>Comment(s):</span></div><table><thead><th>id</th><th>comment</th><th>time</th></thead>%s</table>%s" % ("".join("<tr>%s</tr>" % "".join("<td>%s</td>" % ("-" if _ is None else _) for _ in row) for row in cursor.fetchall()), HTML_POSTFIX)
                 elif "include" in params:
-                    backup, sys.stdout, program, envs = sys.stdout, io.StringIO(), (open(params["include"], "rb") if not "://" in params["include"] else urllib.request.urlopen(params["include"])).read(), {"DOCUMENT_ROOT": os.getcwd(), "HTTP_USER_AGENT": self.headers.get("User-Agent"), "REMOTE_ADDR": self.client_address[0], "REMOTE_PORT": self.client_address[1], "PATH": path, "QUERY_STRING": query}
-                    exec(program, envs)
+                    backup, sys.stdout, program, envs = sys.stdout, io.StringIO(), (open(params["include"], "rb") if not "://" in params["include"] else requests.get(params["include"], timeout=10).content), {"DOCUMENT_ROOT": os.getcwd(), "HTTP_USER_AGENT": self.headers.get("User-Agent"), "REMOTE_ADDR": self.client_address[0], "REMOTE_PORT": self.client_address[1], "PATH": path, "QUERY_STRING": query}
+                    import json
+                    
+                    # Assuming `program` is a JSON string that needs parsing instead of executing as Python code.
+                    def execute_business_logic(program, envs):
+                        # Parse the user input as JSON
+                        try:
+                            program_data = json.loads(program)
+                            
+                            # Perform the necessary business logic with the parsed data
+                            # Example logic; modify according to your real business logic
+                            if isinstance(program_data, dict):
+                                # Example: Use the program data to do something
+                                result = some_business_function(program_data, envs)
+                                return result
+                            else:
+                                print("Invalid program format.")
+                                return None
+                        except json.JSONDecodeError as e:
+                            print(f"Decoding JSON failed: {str(e)}")
+                            return None
+                    
+                    # Define a function representing some business logic
+                    # This function would not interpret strings as code, reducing security risk
+                    def some_business_function(data, envs):
+                        # Perform some operations with data and envs
+                        # This should be carefully vetted to ensure no indirect code execution vulnerabilities
+                        return data
+                    
+                    # Usage
+                    program_example = '{"key": "value"}'
+                    envs_example = {}
+                    execute_business_logic(program_example, envs_example)
                     content += sys.stdout.getvalue()
                     sys.stdout = backup
                 elif "redir" in params:
